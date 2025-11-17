@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Voice Assistant Client</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #f7f9fc;
+      min-height: 100vh;
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(.33); }
+      80%, 100% { opacity: 0; }
+    }
+    @keyframes pulse-dot {
+      0% { transform: scale(.8); }
+      50% { transform: scale(1); }
+      100% { transform: scale(.8); }
+    }
+    .pulse-effect {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pulse-effect::before {
+      content: '';
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background-color: #4f46e5;
+      border-radius: 50%;
+      animation: pulse-ring 1.5s ease-out infinite;
+    }
+    .pulse-effect::after {
+      content: '';
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background-color: #4f46e5;
+      border-radius: 50%;
+      animation: pulse-dot 1.5s ease-in-out -.4s infinite;
+    }
+  </style>
+</head>
+<body class="p-4 sm:p-8 flex items-center justify-center">
+  <div class="w-full max-w-2xl bg-white shadow-xl rounded-2xl p-6 sm:p-10 border border-gray-100">
+    <h1 class="text-3xl font-extrabold text-gray-900 mb-6 text-center">Voice Assistant</h1>
+
+    <!-- Status -->
+    <div id="status-display" class="text-center mb-8">
+      <span id="status-text" class="text-lg font-medium text-gray-600">Idle. Click mic or type a question.</span>
+    </div>
+
+    <!-- Mic Button -->
+    <div class="flex justify-center mb-6">
+      <button id="record-button" class="w-20 h-20 rounded-full bg-indigo-600 text-white shadow-lg transition-all duration-300 transform hover:scale-105 disabled:opacity-50 flex items-center justify-center">
+        <svg id="mic-icon" class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 1a3 3 0 00-3 3v7a3 3 0 006 0V4a3 3 0 00-3-3z"></path>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 10a7 7 0 01-14 0M12 17v4m-4 0h8"></path>
+        </svg>
+        <div id="loading-spinner" class="hidden pulse-effect w-full h-full"></div>
+      </button>
+    </div>
+
+    <!-- Text Input -->
+    <div class="mb-8">
+      <input id="text-input" type="text" placeholder="Type your question..."
+        class="w-full p-3 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      <button id="text-submit" class="mt-3 w-full bg-indigo-600 text-white py-2 rounded-lg shadow hover:bg-indigo-700">
+        Ask Question
+      </button>
+    </div>
+
+    <!-- Output -->
+    <div id="output-area" class="space-y-6">
+      <div id="transcription-card" class="bg-gray-50 p-5 rounded-xl shadow-inner border border-gray-200 hidden text-left">
+        <h2 class="text-xs font-semibold uppercase text-indigo-600 mb-2">Your Question</h2>
+        <p id="transcription-text" class="text-gray-800 text-base italic leading-relaxed"></p>
+      </div>
+
+      <div id="answer-card" class="bg-indigo-50 p-5 rounded-xl shadow-lg border border-indigo-200 hidden text-left">
+        <h2 class="text-xs font-semibold uppercase text-indigo-700 mb-2">AI Response</h2>
+        <p id="answer-text" class="text-gray-900 text-base leading-relaxed tracking-normal"></p>
+        <div id="audio-player-container" class="mt-4 hidden">
+          <audio id="audio-player" controls class="w-full"></audio>
+        </div>
+        <div id="image-container" class="mt-4 hidden">
+          <img id="answer-image" class="rounded-lg shadow-md w-full" />
+        </div>
+      </div>
+    </div>
+
+
+    <div id="error-container" class="mt-6 text-red-600 font-medium hidden p-3 bg-red-100 border border-red-300 rounded-lg">
+      <h3 class="text-sm font-bold">Error:</h3>
+      <p id="error-message" class="text-sm"></p>
+    </div>
+  </div>
+<script>
+const recordButton = document.getElementById('record-button');
+const micIcon = document.getElementById('mic-icon');
+const loadingSpinner = document.getElementById('loading-spinner');
+const transcriptionCard = document.getElementById('transcription-card');
+const transcriptionText = document.getElementById('transcription-text');
+const answerCard = document.getElementById('answer-card');
+const answerText = document.getElementById('answer-text');
+const audioPlayerContainer = document.getElementById('audio-player-container');
+const audioPlayer = document.getElementById('audio-player');
+const imageContainer = document.getElementById('image-container');
+const answerImage = document.getElementById('answer-image');
+const errorContainer = document.getElementById('error-container');
+const errorMessage = document.getElementById('error-message');
+const textInput = document.getElementById('text-input');
+const textSubmit = document.getElementById('text-submit');
+
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/audio`;
+const AUDIO_URL = `${location.protocol}//${location.host}/live_answer.mp3`;
+
+let isRecording = false;
+let mediaRecorder;
+let socket;
+
+function updateStatus(text, color = 'text-gray-600', buttonClasses = 'bg-indigo-600') {
+  const statusText = document.getElementById('status-text');
+  statusText.textContent = text;
+  statusText.className = `text-lg font-medium ${color}`;
+  recordButton.className = `w-20 h-20 rounded-full text-white shadow-lg transition-all duration-300 transform hover:scale-105 disabled:opacity-50 flex items-center justify-center ${buttonClasses}`;
+}
+
+function showError(message) {
+  errorContainer.classList.remove('hidden');
+  errorMessage.textContent = message;
+  transcriptionCard.classList.add('hidden');
+  answerCard.classList.add('hidden');
+  updateStatus('Error', 'text-red-600', 'bg-red-600');
+  micIcon.classList.remove('hidden');
+  loadingSpinner.classList.add('hidden');
+}
+
+function clearOutput() {
+  transcriptionCard.classList.add('hidden');
+  answerCard.classList.add('hidden');
+  audioPlayerContainer.classList.add('hidden');
+  imageContainer.classList.add('hidden');
+  errorContainer.classList.add('hidden');
+}
+
+async function fetchAndPlayAudio(retryCount = 0) {
+  const maxRetries = 10;
+  const delay = Math.pow(2, retryCount) * 500;
+  if (retryCount >= maxRetries) {
+    showError("Failed to fetch AI audio response after multiple retries.");
+    updateStatus('Ready', 'text-green-600', 'bg-green-600');
+    return;
+  }
+  try {
+    const response = await fetch(AUDIO_URL);
+    if (response.ok) {
+      const audioBlob = await response.blob();
+      const audioSrc = URL.createObjectURL(audioBlob);
+      audioPlayer.src = audioSrc;
+      audioPlayerContainer.classList.remove('hidden');
+      audioPlayer.play();
+      updateStatus('Ready (Audio playing)', 'text-green-600', 'bg-green-600');
+      recordButton.disabled = false;
+    } else if (response.status === 404 || response.status === 503) {
+      setTimeout(() => fetchAndPlayAudio(retryCount + 1), delay);
+      updateStatus(`Processing audio... (Retry ${retryCount + 1}/${maxRetries})`, 'text-yellow-600', 'bg-yellow-600');
+    } else {
+      throw new Error(`Server returned status ${response.status}`);
+    }
+  } catch (e) {
+    showError(`Playback error: ${e.message}`);
+    recordButton.disabled = false;
+    updateStatus('Ready', 'text-green-600', 'bg-green-600');
+  }
+}
+
+async function startRecording() {
+  clearOutput();
+  recordButton.disabled = true;
+  micIcon.classList.add('hidden');
+  loadingSpinner.classList.remove('hidden');
+  updateStatus('Recording...', 'text-red-600', 'bg-red-600 pulse-effect');
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+    socket = new WebSocket(WS_URL);
+
+    socket.onopen = () => {
+      updateStatus('Recording, click to stop...', 'text-red-600', 'bg-red-600 pulse-effect');
+      recordButton.disabled = false;
+      isRecording = true;
+      mediaRecorder.start(500);
+    };
+
+    mediaRecorder.ondataavailable = event => {
+      if (event.data.size > 0 && socket.readyState === WebSocket.OPEN) {
+        socket.send(event.data);
+      }
+    };
+
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(track => track.stop());
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ done: true }));
+      }
+    };
+
+    socket.onmessage = async (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (err) {
+        showError("Invalid server response");
+        socket.close();
+        return;
+      }
+
+      if (data.error) {
+        showError(`Server error: ${data.error}`);
+        socket.close();
+        return;
+      }
+
+      if (data.transcription && data.answer) {
+        transcriptionText.textContent = data.transcription;
+        transcriptionCard.classList.remove('hidden');
+        answerText.textContent = data.answer;
+        answerCard.classList.remove('hidden');
+
+        await fetchAndPlayAudio(0);
+
+        // ✅ Image handling
+        if (data.image_base64) {
+          const mime = data.mime_type || "image/png";
+          answerImage.src = `data:${mime};base64,${data.image_base64}`;
+          answerImage.style.display = "block";
+          imageContainer.classList.remove('hidden');
+        } else if (data.image_url) {
+          if (data.image_url.includes("google.com/search") || data.image_url.includes("duckduckgo.com")) {
+            answerImage.style.display = "none";
+            imageContainer.innerHTML = `<a href="${data.image_url}" target="_blank" class="text-blue-600 underline">View diagram online</a>`;
+            imageContainer.classList.remove('hidden');
+          } else {
+            answerImage.src = data.image_url;
+            answerImage.style.display = "block";
+            imageContainer.classList.remove('hidden');
+          }
+        } else {
+          imageContainer.classList.add('hidden');
+        }
+
+        socket.close();
+      }
+    };
+
+    socket.onclose = () => {
+      micIcon.classList.remove('hidden');
+      loadingSpinner.classList.add('hidden');
+      recordButton.disabled = false;
+      isRecording = false;
+      updateStatus('Ready', 'text-green-600', 'bg-green-600');
+    };
+
+    socket.onerror = () => {
+      showError("WebSocket connection failed.");
+      micIcon.classList.remove('hidden');
+      loadingSpinner.classList.add('hidden');
+      recordButton.disabled = false;
+      isRecording = false;
+    };
+
+  } catch (e) {
+    showError(`Microphone access failed: ${e.message}`);
+    micIcon.classList.remove('hidden');
+    loadingSpinner.classList.add('hidden');
+    recordButton.disabled = false;
+    isRecording = false;
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+    updateStatus('Processing...', 'text-yellow-700', 'bg-yellow-500');
+    recordButton.disabled = true;
+    micIcon.classList.add('hidden');
+    loadingSpinner.classList.remove('hidden');
+  }
+}
+
+recordButton.addEventListener('click', () => {
+  if (isRecording) stopRecording();
+  else startRecording();
+});
+
+// Handle text input questions
+textSubmit.addEventListener('click', async () => {
+  clearOutput();
+  updateStatus('Processing text...', 'text-yellow-700', 'bg-yellow-500');
+
+  try {
+    const formData = new FormData();
+    formData.append("question", textInput.value);
+
+    const response = await fetch('/ask', {
+      method: 'POST',
+      body: formData
+    });
+
+    let data;
+    try {
+      data = await response.json();
+    } catch (err) {
+      showError("Invalid server response");
+      return;
+    }
+
+    if (data.error) {
+      showError(`Server error: ${data.details || data.error}`);
+      return;
+    }
+
+    transcriptionText.textContent = data.question;
+    transcriptionCard.classList.remove('hidden');
+    answerText.textContent = data.answer;
+    answerCard.classList.remove('hidden');
+
+    if (data.audio_url) {
+      const audioResp = await fetch(data.audio_url);
+      if (audioResp.ok) {
+        const audioBlob = await audioResp.blob();
+        const audioSrc = URL.createObjectURL(audioBlob);
+        audioPlayer.src = audioSrc;
+        audioPlayerContainer.classList.remove('hidden');
+        audioPlayer.play();
+      }
+    }
+
+    // ✅ Image handling
+    if (data.image_base64) {
+      const mime = data.mime_type || "image/png";
+      answerImage.src = `data:${mime};base64,${data.image_base64}`;
+      answerImage.style.display = "block";
+      imageContainer.classList.remove('hidden');
+    } else if (data.image_url) {
+            if (data.image_url.includes("google.com/search") || data.image_url.includes("duckduckgo.com")) {
+        // Show clickable link instead of image
+        answerImage.style.display = "none";
+        imageContainer.innerHTML = `<a href="${data.image_url}" target="_blank" class="text-blue-600 underline">View diagram online</a>`;
+        imageContainer.classList.remove('hidden');
+      } else {
+        // Show direct image URL
+        answerImage.src = data.image_url;
+        answerImage.style.display = "block";
+        imageContainer.classList.remove('hidden');
+      }
+    } else {
+      imageContainer.classList.add('hidden');
+    }
+
+    textInput.value = ""; // clear input after submit
+    updateStatus('Ready', 'text-green-600', 'bg-green-600');
+  } catch (e) {
+    showError(`Text query failed: ${e.message}`);
+  }
+});
+
+// Initial status
+updateStatus('Ready', 'text-gray-600', 'bg-indigo-600');
+</script>
+
+
+
+
+
+      
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!--<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Voice Assistant Client</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #f7f9fc;
+      min-height: 100vh;
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(.33); }
+      80%, 100% { opacity: 0; }
+    }
+    @keyframes pulse-dot {
+      0% { transform: scale(.8); }
+      50% { transform: scale(1); }
+      100% { transform: scale(.8); }
+    }
+    .pulse-effect {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pulse-effect::before {
+      content: '';
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background-color: #4f46e5;
+      border-radius: 50%;
+      animation: pulse-ring 1.5s ease-out infinite;
+    }
+    .pulse-effect::after {
+      content: '';
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background-color: #4f46e5;
+      border-radius: 50%;
+      animation: pulse-dot 1.5s ease-in-out -.4s infinite;
+    }
+  </style>
+</head>
+<body class="p-4 sm:p-8 flex items-center justify-center">
+  <div class="w-full max-w-2xl bg-white shadow-xl rounded-2xl p-6 sm:p-10 border border-gray-100">
+    <h1 class="text-3xl font-extrabold text-gray-900 mb-6 text-center">Voice Assistant</h1>
+
+    <div id="status-display" class="text-center mb-8">
+      <span id="status-text" class="text-lg font-medium text-gray-600">Idle. Click to record.</span>
+    </div>
+
+    <div class="flex justify-center mb-10">
+      <button id="record-button" class="w-20 h-20 rounded-full bg-indigo-600 text-white shadow-lg transition-all duration-300 transform hover:scale-105 disabled:opacity-50 flex items-center justify-center">
+        <svg id="mic-icon" class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7v0a7 7 0 01-7-7v0a7 7 0 017-7v0a7 7 0 017 7v0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 21v-3m8 3v-3m-4 3v-3m0 3v-3"></path></svg>
+        <div id="loading-spinner" class="hidden pulse-effect w-full h-full"></div>
+      </button>
+    </div>
+    <div class="mt-6">
+  <input id="text-input" type="text" placeholder="Type your question..."
+    class="w-full p-3 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+  <button id="text-submit" class="mt-3 w-full bg-indigo-600 text-white py-2 rounded-lg shadow hover:bg-indigo-700">
+    Ask Question
+  </button>
+</div>
+
+    <div id="output-area" class="space-y-6">
+      <div id="transcription-card" class="bg-gray-50 p-5 rounded-xl shadow-inner border border-gray-200 hidden">
+        <h2 class="text-xs font-semibold uppercase text-indigo-600 mb-2">Your Question (Transcription)</h2>
+        <p id="transcription-text" class="text-gray-800 text-base italic"></p>
+      </div>
+
+      <div id="answer-card" class="bg-indigo-50 p-5 rounded-xl shadow-lg border border-indigo-200 hidden">
+        <h2 class="text-xs font-semibold uppercase text-indigo-700 mb-2">AI Response</h2>
+        <p id="answer-text" class="text-gray-900 text-base leading-relaxed"></p>
+        <div id="audio-player-container" class="mt-4 hidden">
+          <audio id="audio-player" controls class="w-full"></audio>
+        </div>
+      </div>
+    </div>
+
+    <div id="error-container" class="mt-6 text-red-600 font-medium hidden p-3 bg-red-100 border border-red-300 rounded-lg">
+      <h3 class="text-sm font-bold">Error:</h3>
+      <p id="error-message" class="text-sm"></p>
+    </div>
+
+    
+  </div>
+<script>
+const textInput = document.getElementById('text-input');
+const textSubmit = document.getElementById('text-submit');
+
+textSubmit.addEventListener('click', async () => {
+  clearOutput();
+  updateStatus('Processing text...', 'text-yellow-700', 'bg-yellow-500');
+
+  try {
+    const formData = new FormData();
+    formData.append("question", textInput.value);
+
+    const response = await fetch('/ask', {
+      method: 'POST',
+      body: formData
+    });
+
+    const data = await response.json();
+
+    transcriptionText.textContent = data.question;
+    transcriptionCard.classList.remove('hidden');
+    answerText.textContent = data.answer;
+    answerCard.classList.remove('hidden');
+
+    // Play audio
+    audioPlayer.src = data.audio_url;
+    audioPlayerContainer.classList.remove('hidden');
+    audioPlayer.play();
+
+    updateStatus('Ready', 'text-green-600', 'bg-green-600');
+  } catch (e) {
+    showError(`Text query failed: ${e.message}`);
+  }
+});
+</script>
+
+  <script>
+ 
+  const SERVER_HOST = 'localhost:8000';
+  const WS_URL = `ws://${SERVER_HOST}/ws/audio`;
+  const AUDIO_URL = `http://${SERVER_HOST}/live_answer.mp3`;
+
+  const recordButton = document.getElementById('record-button');
+  const micIcon = document.getElementById('mic-icon');
+  const loadingSpinner = document.getElementById('loading-spinner');
+  const statusText = document.getElementById('status-text');
+  const transcriptionCard = document.getElementById('transcription-card');
+  const transcriptionText = document.getElementById('transcription-text');
+  const answerCard = document.getElementById('answer-card');
+  const answerText = document.getElementById('answer-text');
+  const audioPlayerContainer = document.getElementById('audio-player-container');
+  const audioPlayer = document.getElementById('audio-player');
+  const errorContainer = document.getElementById('error-container');
+  const errorMessage = document.getElementById('error-message');
+
+  let isRecording = false;
+  let mediaRecorder;
+  let audioChunks = [];
+  let socket;
+
+  function updateStatus(text, color = 'text-gray-600', buttonClasses = 'bg-indigo-600') {
+    statusText.textContent = text;
+    statusText.className = `text-lg font-medium ${color}`;
+    recordButton.className = `w-20 h-20 rounded-full text-white shadow-lg transition-all duration-300 transform hover:scale-105 disabled:opacity-50 flex items-center justify-center ${buttonClasses}`;
+  }
+
+  function showError(message) {
+    errorContainer.classList.remove('hidden');
+    errorMessage.textContent = message;
+    transcriptionCard.classList.add('hidden');
+    answerCard.classList.add('hidden');
+    updateStatus('Error', 'text-red-600', 'bg-red-600');
+    micIcon.classList.remove('hidden');
+    loadingSpinner.classList.add('hidden');
+  }
+
+  function clearOutput() {
+    transcriptionCard.classList.add('hidden');
+    answerCard.classList.add('hidden');
+    audioPlayerContainer.classList.add('hidden');
+    errorContainer.classList.add('hidden');
+  }
+
+  async function fetchAndPlayAudio(retryCount = 0) {
+    const maxRetries = 10;
+    const delay = Math.pow(2, retryCount) * 500;
+
+    if (retryCount >= maxRetries) {
+      showError("Failed to fetch AI audio response after multiple retries.");
+      updateStatus('Ready', 'text-green-600', 'bg-green-600');
+      return;
+    }
+
+    try {
+      const response = await fetch(AUDIO_URL);
+      if (response.ok) {
+        const audioBlob = await response.blob();
+        const audioSrc = URL.createObjectURL(audioBlob);
+        audioPlayer.src = audioSrc;
+        audioPlayerContainer.classList.remove('hidden');
+        audioPlayer.play();
+        updateStatus('Ready (Audio playing)', 'text-green-600', 'bg-green-600');
+        recordButton.disabled = false;
+      } else if (response.status === 404 || response.status === 503) {
+        setTimeout(() => fetchAndPlayAudio(retryCount + 1), delay);
+        updateStatus(`Processing audio... (Retry ${retryCount + 1}/${maxRetries})`, 'text-yellow-600', 'bg-yellow-600');
+      } else {
+        throw new Error(`Server returned status ${response.status}`);
+      }
+    } catch (e) {
+      showError(`Playback error: ${e.message}`);
+      recordButton.disabled = false;
+      updateStatus('Ready', 'text-green-600', 'bg-green-600');
+    }
+  }
+
+  async function startRecording() {
+    clearOutput();
+    recordButton.disabled = true;
+    micIcon.classList.add('hidden');
+    loadingSpinner.classList.remove('hidden');
+    updateStatus('Recording...', 'text-red-600', 'bg-red-600 pulse-effect');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      audioChunks = [];
+      socket = new WebSocket(WS_URL);
+
+      socket.onopen = () => {
+        updateStatus('Recording, click to stop...', 'text-red-600', 'bg-red-600 pulse-effect');
+        recordButton.disabled = false;
+        isRecording = true;
+
+        mediaRecorder.ondataavailable = event => {
+          if (event.data.size > 0) {
+            audioChunks.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = () => {
+          const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(audioBlob);
+          }
+          stream.getTracks().forEach(track => track.stop());
+        };
+
+        mediaRecorder.start(1000);
+      };
+
+      socket.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.error) {
+          showError(`Server error: ${data.error}`);
+          socket.close();
+          return;
+        }
+
+        transcriptionText.textContent = data.transcription || 'No speech detected.';
+        transcriptionCard.classList.remove('hidden');
+        answerText.textContent = data.answer || 'No text answer received.';
+        answerCard.classList.remove('hidden');
+
+        await fetchAndPlayAudio(0);
+        socket.close();
+      };
+
+      socket.onclose = () => {
+        micIcon.classList.remove('hidden');
+        loadingSpinner.classList.add('hidden');
+        recordButton.disabled = false;
+        isRecording = false;
+      };
+
+      socket.onerror = (e) => {
+        console.error('WebSocket encountered an error:', e);
+        showError("Could not connect to the FastAPI server. Please ensure it is running at ws://localhost:8000.");
+        micIcon.classList.remove('hidden');
+        loadingSpinner.classList.add('hidden');
+        recordButton.disabled = false;
+        isRecording = false;
+      };
+
+    } catch (e) {
+      showError(`Microphone access failed: ${e.message}. Ensure you grant permission.`);
+      micIcon.classList.remove('hidden');
+      loadingSpinner.classList.add('hidden');
+      recordButton.disabled = false;
+      isRecording = false;
+    }
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+      updateStatus('Sending audio to AI for processing...', 'text-yellow-700', 'bg-yellow-500');
+      recordButton.disabled = true;
+      micIcon.classList.add('hidden');
+      loadingSpinner.classList.remove('hidden');
+    }
+  }
+
+  recordButton.addEventListener('click', () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  });
+
+  updateStatus('Ready', 'text-gray-600', 'bg-indigo-600');
+</script>
+</body>
+</html>-->
