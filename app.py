@@ -1,492 +1,486 @@
 import os
 import logging
-import subprocess
-import asyncio
+import time
 import base64
-import json
-
 import requests
-from fastapi import FastAPI, HTTPException, WebSocket, Form
+import subprocess
+import threading
+from gtts import gTTS
+
+from fastapi import FastAPI, HTTPException, Form, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from faster_whisper import WhisperModel
-import google.generativeai as genai
-import pyttsx3
 from dotenv import load_dotenv
-from PIL import Image, ImageDraw
+import google.generativeai as genai
+from faster_whisper import WhisperModel
+
+# Allow duplicate OpenMP runtime (workaround for Whisper on Windows)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # --- Configuration ---
-# Set logging level
 logging.basicConfig(level=logging.INFO)
-
-# Load environment variables (GEMINI_API_KEY, HF_API_TOKEN, HF_MODEL)
 load_dotenv()
 
-# Define paths
 STATIC_DIR = "static"
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-INPUT_WEBM = "live_input.webm"
-INPUT_WAV = "live_input.wav"
-OUTPUT_MP3 = os.path.join(STATIC_DIR, "live_answer.mp3")
-PLACEHOLDER_PATH = os.path.join(STATIC_DIR, "placeholder.png")
-FETCHED_PATH = os.path.join(STATIC_DIR, "fetched.png")
-FRONT_HTML = os.path.join(STATIC_DIR, "front.html")
+FRONT_HTML = os.path.join(STATIC_DIR, "new.html")
 
-# Gemini Configuration
+# Gemini setup
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 genai.configure(api_key=GEMINI_API_KEY)
 GEMINI_TEXT_MODEL = "gemini-2.5-flash"
 
-# Hugging Face Configuration
-HF_API_TOKEN = os.getenv("HF_API_TOKEN")
-# Using SDXL base model as the default
-HF_MODEL = os.getenv("HF_MODEL", "stabilityai/stable-diffusion-xl-base-1.0") 
-if not HF_API_TOKEN:
-    # Changed to logging.error to allow the script to potentially run without image features
-    # if the user wants to test only voice, but raised if the image func is called
-    logging.error("HF_API_TOKEN not set in .env. Image generation will fail.")
-
-# Whisper Configuration
+# Whisper setup (use "tiny" for speed, "small" for accuracy)
 whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
 
-# FastAPI Setup
-app = FastAPI(title="Voice + Image Assistant")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-# --- Ensure placeholder exists ---
-if not os.path.exists(PLACEHOLDER_PATH):
-    img = Image.new("RGB", (512, 512), color="white")
-    d = ImageDraw.Draw(img)
-    d.text((50, 240), "No image available", fill="black")
-    img.save(PLACEHOLDER_PATH)
-
-# --- Utility Functions ---
-
-def clean_files():
-    """Removes temporary files."""
-    for f in [INPUT_WEBM, INPUT_WAV, OUTPUT_MP3, FETCHED_PATH]:
-        if os.path.exists(f):
-            try:
-                os.remove(f)
-            except Exception as e:
-                logging.warning(f"Failed to remove {f}: {e}")
-
-def get_ai_response(prompt: str) -> str:
-    """Gets a text response from the Gemini API."""
-    try:
-        model = genai.GenerativeModel(GEMINI_TEXT_MODEL)
-        response = model.generate_content(prompt)
-        if getattr(response, "text", None):
-            return response.text.strip()
-        return "No response text found."
-    except Exception as e:
-        logging.error(f"Gemini text error: {e}")
-        return "Sorry, I couldn't generate a response."
-
-def generate_tts_audio(text: str, output_path: str):
-    """Generates an MP3 file using pyttsx3."""
-    try:
-        engine = pyttsx3.init()
-        # Ensure the rate is set for a natural sound
-        engine.setProperty('rate', 150) 
-        engine.save_to_file(text, output_path)
-        engine.runAndWait()
-    except Exception as e:
-        logging.error(f"TTS error: {e}")
-
-def generate_image_hf(prompt: str):
-    """Generate image from Hugging Face Inference API (Fixed URL)"""
-    if not HF_API_TOKEN:
-         logging.error("HF_API_TOKEN is missing. Cannot generate image.")
-         return None
-         
-    try:
-        # --- FIXED URL: Added /models/ after /hf-inference/ ---
-        url = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL}"
-        
-        headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-        
-        # Added parameters for better SDXL generation and to prevent model loading issues
-        payload = {
-            "inputs": f"highly detailed diagram or illustration of: {prompt}",
-            "parameters": {
-                "wait_for_model": True, # Wait if the model is loading
-                "height": 512,
-                "width": 512,
-            }
-        }
-
-        # Set a 60-second timeout for image generation
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-        
-        if response.status_code != 200:
-            logging.error(f"Hugging Face error {response.status_code}: {response.text}")
-            return None
-
-        content_type = response.headers.get("content-type", "application/octet-stream")
-        if not content_type.startswith("image/"):
-            logging.error(f"Hugging Face returned non-image content: {content_type}")
-            return None
-
-        img_bytes = response.content
-        
-        # Save the image bytes to a local file
-        with open(FETCHED_PATH, "wb") as f:
-            f.write(img_bytes)
-
-        # Convert to Base64 for the WebSocket/API response
-        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-        
-        return {
-            "image_base64": img_b64,
-            "mime_type": content_type,
-            "image_url": "/static/fetched.png"
-        }
-    except requests.exceptions.Timeout:
-        logging.error("Hugging Face request timed out after 60 seconds.")
-        return None
-    except Exception as e:
-        logging.error(f"Hugging Face image error: {e}")
-        return None
-
-def maybe_generate_image(prompt: str):
-    """Attempts to generate an image and falls back to a placeholder."""
-    result = generate_image_hf(prompt)
-    if result:
-        return result
-        
-    # Fallback to placeholder
-    try:
-        with open(PLACEHOLDER_PATH, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
-        return {"image_base64": img_b64, "mime_type": "image/png", "image_url": "/static/placeholder.png"}
-    except Exception:
-        # Final fallback if placeholder itself can't be read
-        return {"image_base64": None, "mime_type": "image/png", "image_url": "/static/placeholder.png"}
-
-# --- WebSocket Endpoint ---
-@app.websocket("/ws/audio")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    audio_data = bytearray()
-    clean_files() # Clean up before starting
-
-    try:
-        while True:
-            # Removed the 10.0 timeout from wait_for to let the client control the connection
-            message = await websocket.receive()
-            
-            if message.get("bytes"):
-                audio_data.extend(message["bytes"])
-            elif message.get("text"):
-                try:
-                    data = json.loads(message["text"])
-                    if data.get("done"):
-                        break
-                except json.JSONDecodeError:
-                    pass
-            
-            if len(audio_data) > 5_000_000:
-                logging.warning("Received too much audio data. Stopping.")
-                break
-    except Exception as e:
-        logging.info(f"WebSocket closed by client or connection error: {e}")
-
-    if not audio_data:
-        await websocket.send_json({"error": "No audio received."})
-        await websocket.close()
-        return
-
-    # Process audio
-    with open(INPUT_WEBM, "wb") as f:
-        f.write(audio_data)
-
-    try:
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-i", INPUT_WEBM,
-            "-c:a", "pcm_s16le",
-            "-ar", "48000",
-            "-ac", "1",
-            INPUT_WAV
-        ], check=True, capture_output=True) # Added capture_output=True for cleaner runs
-    except subprocess.CalledProcessError as e:
-        logging.error(f"FFmpeg failed: {e.stderr.decode()}")
-        await websocket.send_json({"error": f"FFmpeg failed: {e.stderr.decode()}"})
-        await websocket.close()
-        return
-
-    # Transcription, AI Response, TTS, and Image Generation are moved to threads
-    segments, _ = whisper_model.transcribe(INPUT_WAV)
-    transcription = " ".join([seg.text.strip() for seg in segments if seg.text]) or "No clear speech detected."
-
-    answer = await asyncio.to_thread(get_ai_response, transcription)
-    await asyncio.to_thread(generate_tts_audio, answer, OUTPUT_MP3)
-    image_result = await asyncio.to_thread(maybe_generate_image, transcription)
-
-    # Send final result
-    await websocket.send_json({
-        "transcription": transcription,
-        "answer": answer,
-        "audio_url": "/static/live_answer.mp3",
-        "image_base64": image_result.get("image_base64"),
-        "mime_type": image_result.get("mime_type"),
-        "image_url": image_result.get("image_url")
-    })
-    await websocket.close()
-    
-    # Final cleanup (optional, but good practice)
-    # clean_files() 
-
-# --- Routes ---
-@app.get("/", response_class=HTMLResponse)
-def root():
-    return FileResponse(FRONT_HTML)
-
-@app.get("/favicon.ico")
-def favicon():
-    path = os.path.join(STATIC_DIR, "favicon.ico")
-    if os.path.exists(path):
-        return FileResponse(path)
-    return HTMLResponse(content="", status_code=204)
-
-@app.get("/static/live_answer.mp3")
-async def get_audio():
-    if not os.path.exists(OUTPUT_MP3):
-        raise HTTPException(status_code=404, detail="Audio not found.")
-    return FileResponse(OUTPUT_MP3, media_type="audio/mpeg")
-
-@app.post("/ask")
-async def ask_question(question: str = Form(...)):
-    """Handles text-based questions (without streaming audio)."""
-    try:
-        # Generate AI answer
-        answer = await asyncio.to_thread(get_ai_response, question)
-
-        # Generate TTS audio file
-        await asyncio.to_thread(generate_tts_audio, answer, OUTPUT_MP3)
-
-        # Generate or fetch diagram image
-        image_result = await asyncio.to_thread(maybe_generate_image, question)
-
-        # Return JSON response
-        return {
-            "question": question,
-            "answer": answer,
-            "audio_url": "/static/live_answer.mp3",
-            "image_base64": image_result.get("image_base64"),
-            "mime_type": image_result.get("mime_type"),
-            "image_url": image_result.get("image_url")
-        }
-    except Exception as e:
-        logging.error(f"Ask route error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
-
-
-
-"""
-import os
-import logging
-import subprocess
-import asyncio
-import base64
-import json
-
-import requests
-from fastapi import FastAPI, HTTPException, WebSocket, Form
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from faster_whisper import WhisperModel
-import google.generativeai as genai
-import pyttsx3
-from dotenv import load_dotenv
-from PIL import Image, ImageDraw
-
-# --- Configuration ---
-logging.basicConfig(level=logging.INFO)
-load_dotenv()
-
-STATIC_DIR = "static"
-os.makedirs(STATIC_DIR, exist_ok=True)
-
-INPUT_WEBM = "live_input.webm"
-INPUT_WAV = "live_input.wav"
-OUTPUT_MP3 = os.path.join(STATIC_DIR, "live_answer.mp3")
-PLACEHOLDER_PATH = os.path.join(STATIC_DIR, "placeholder.png")
-FETCHED_PATH = os.path.join(STATIC_DIR, "fetched.png")
-FRONT_HTML = os.path.join(STATIC_DIR, "front.html")
-
-# Gemini
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY not set")
-genai.configure(api_key=GEMINI_API_KEY)
-GEMINI_TEXT_MODEL = "gemini-2.5-flash"
-
-# Hugging Face
+# Hugging Face setup
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 HF_MODEL = os.getenv("HF_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
-if not HF_API_TOKEN:
-    raise RuntimeError("HF_API_TOKEN not set in .env")
 
-# Whisper
-whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
-
-# FastAPI
-app = FastAPI(title="Voice + Image Assistant")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# FastAPI setup
+app = FastAPI(title="Voice + Image Chatbot")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# --- Ensure placeholder exists ---
-if not os.path.exists(PLACEHOLDER_PATH):
-    img = Image.new("RGB", (512, 512), color="white")
-    d = ImageDraw.Draw(img)
-    d.text((50, 240), "No image available", fill="black")
-    img.save(PLACEHOLDER_PATH)
-
 # --- Utility Functions ---
-def clean_files():
-    for f in [INPUT_WEBM, INPUT_WAV, OUTPUT_MP3, FETCHED_PATH]:
-        if os.path.exists(f):
-            try:
-                os.remove(f)
-            except Exception as e:
-                logging.warning(f"Failed to remove {f}: {e}")
-
 def get_ai_response(prompt: str) -> str:
+    """Get text response from Gemini API."""
     try:
         model = genai.GenerativeModel(GEMINI_TEXT_MODEL)
         response = model.generate_content(prompt)
-        if getattr(response, "text", None):
+        if hasattr(response, "text") and response.text:
             return response.text.strip()
+        if hasattr(response, "candidates") and response.candidates:
+            parts = response.candidates[0].content.parts
+            if parts and hasattr(parts[0], "text"):
+                return parts[0].text.strip()
         return "No response text found."
     except Exception as e:
-        logging.error(f"Gemini text error: {e}")
+        logging.error(f"Gemini error: {e}")
         return "Sorry, I couldn't generate a response."
 
+
+def format_structured(text: str, bullet_symbol: str = "⭐\n") -> str:
+    """Format Gemini text into structured Markdown with optional bullet symbol."""
+    if not text:
+        return "\n\n- No response available."
+
+    paragraphs = text.split("\n")
+    formatted = []
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        if para.startswith("##"):
+            formatted.append(para)
+            continue
+        if len(para.split()) < 12:
+            formatted.append(para)
+            continue
+        sentences = para.split(". ")
+        for s in sentences:
+            s = s.strip()
+            if s:
+                formatted.append(f"{bullet_symbol} {s}")
+
+    return "\n".join(formatted)
+
+
 def generate_tts_audio(text: str, output_path: str):
+    """Generate MP3 audio using gTTS, splitting long text into chunks."""
     try:
-        engine = pyttsx3.init()
-        engine.save_to_file(text, output_path)
-        engine.runAndWait()
+        cleaned = (text or "").strip()
+        if not cleaned:
+            cleaned = "Sorry, I have no response."
+
+        # Split into chunks (~250 chars each)
+        chunks = [cleaned[i:i+250] for i in range(0, len(cleaned), 250)]
+        temp_files = []
+
+        for idx, chunk in enumerate(chunks):
+            tts = gTTS(text=chunk, lang="en", slow=False)
+            temp_file = f"{output_path}_{idx}.mp3"
+            tts.save(temp_file)
+            temp_files.append(temp_file)
+
+        # Concatenate with ffmpeg
+        list_file = f"{output_path}_list.txt"
+        with open(list_file, "w") as f:
+            for tf in temp_files:
+                f.write(f"file '{os.path.abspath(tf)}'\n")
+
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", list_file, "-c", "copy", output_path
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # Cleanup
+        for tf in temp_files:
+            os.remove(tf)
+        os.remove(list_file)
+
+        logging.info(f"TTS saved: {output_path}")
     except Exception as e:
         logging.error(f"TTS error: {e}")
 
+
 def generate_image_hf(prompt: str):
-
+    """Generate image using Hugging Face Router Inference API."""
+    if not HF_API_TOKEN:
+        logging.error("HF_API_TOKEN not set. Cannot generate image.")
+        return None
     try:
-        url = f"https://router.huggingface.co/hf-inference/{HF_MODEL}"
-        headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-        payload = {"inputs": prompt}
+        url = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL}"
+        headers = {
+            "Authorization": f"Bearer {HF_API_TOKEN}",
+            "Accept": "image/png",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "guidance_scale": 7.5,
+                "num_inference_steps": 20
+            }
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
 
-        response = requests.post(url, headers=headers, json=payload)
         if response.status_code != 200:
             logging.error(f"Hugging Face error {response.status_code}: {response.text}")
             return None
 
-        if "application/json" in response.headers.get("content-type", ""):
-            logging.error(f"Hugging Face returned JSON instead of image: {response.text}")
-            return None
-
         img_bytes = response.content
-        with open(FETCHED_PATH, "wb") as f:
+        filename = f"generated_{int(time.time())}.png"
+        img_path = os.path.join(STATIC_DIR, filename)
+        with open(img_path, "wb") as f:
             f.write(img_bytes)
 
         img_b64 = base64.b64encode(img_bytes).decode("utf-8")
         return {
-            "image_base64": img_b64,
-            "mime_type": "image/png",
-            "image_url": "/static/fetched.png"
+            "reply": f"## 🎨 Generated Image\n\n⭐ Prompt: {prompt}",
+            "image_url": f"/static/{filename}",
+            "image_base64": img_b64
         }
+
     except Exception as e:
         logging.error(f"Hugging Face image error: {e}")
         return None
 
-def maybe_generate_image(prompt: str):
-    result = generate_image_hf(prompt)
-    if result:
-        return result
-    try:
-        with open(PLACEHOLDER_PATH, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
-        return {"image_base64": img_b64, "mime_type": "image/png", "image_url": "/static/placeholder.png"}
-    except Exception:
-        return {"image_base64": None, "mime_type": "image/png", "image_url": "/static/placeholder.png"}
-
-# --- WebSocket Endpoint ---
-@app.websocket("/ws/audio")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    audio_data = bytearray()
-    clean_files()
-
-    try:
-        while True:
-            message = await websocket.receive()
-            if message.get("bytes"):
-                audio_data.extend(message["bytes"])
-            elif message.get("text"):
-                try:
-                    data = json.loads(message["text"])
-                    if data.get("done"):
-                        break
-                except json.JSONDecodeError:
-                    pass
-            if len(audio_data) > 5_000_000:
-                break
-    except Exception as e:
-        logging.info(f"WebSocket closed: {e}")
-
-    if not audio_data:
-        await websocket.send_json({"error": "No audio received."})
-        await websocket.close()
-        return
-
-    with open(INPUT_WEBM, "wb") as f:
-        f.write(audio_data)
-
-    try:
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-i", INPUT_WEBM,
-            "-c:a", "pcm_s16le",
-            "-ar", "48000",
-            "-ac", "1",
-            INPUT_WAV
-        ], check=True)
-    except subprocess.CalledProcessError as e:
-        await websocket.send_json({"error": f"FFmpeg failed: {e}"})
-        await websocket.close()
-        return
-
-    segments, _ = whisper_model.transcribe(INPUT_WAV)
-    transcription = " ".join([seg.text.strip() for seg in segments if seg.text]) or "No clear speech detected."
-
-    answer = await asyncio.to_thread(get_ai_response, transcription)
-    await asyncio.to_thread(generate_tts_audio, answer, OUTPUT_MP3)
-    image_result = await asyncio.to_thread(maybe_generate_image, transcription)
-
-    await websocket.send_json({
-        "transcription": transcription,
-        "answer": answer,
-        "audio_url": "/static/live_answer.mp3",
-        "image_base64": image_result.get("image_base64"),
-        "mime_type": image_result.get("mime_type"),
-        "image_url": image_result.get("image_url")
-    })
-    await websocket.close()
 
 # --- Routes ---
 @app.get("/", response_class=HTMLResponse)
 def root():
     return FileResponse(FRONT_HTML)
+
+
+@app.get("/audio-status/{filename}")
+def audio_status(filename: str):
+    """Check if the generated audio file is ready."""
+    path = os.path.join(STATIC_DIR, filename)
+    return {"ready": os.path.exists(path)}
+
+
+@app.post("/chat")
+async def chat(question: str = Form(...), need_audio: bool = Form(False)):
+    """Text input: image generation or Gemini structured reply."""
+    try:
+        q_lower = question.lower()
+        image_keywords = ["generate", "create", "draw", "illustrate", "design", "picture", "image", "art"]
+
+        if any(k in q_lower for k in image_keywords):
+            image_result = generate_image_hf(question)
+            if image_result:
+                return JSONResponse(image_result)
+            else:
+                return JSONResponse({"reply": "## ❌ Error\n\n⭐ Couldn't generate an image."})
+
+        answer = get_ai_response(question)
+        structured = format_structured(answer)
+
+        if need_audio:
+            filename = f"answer_{int(time.time())}.mp3"
+            output_mp3 = os.path.join(STATIC_DIR, filename)
+            threading.Thread(target=generate_tts_audio, args=(answer, output_mp3), daemon=True).start()
+            return JSONResponse({"reply": structured, "audio": f"/static/{filename}"})
+        else:
+            return JSONResponse({"reply": structured})
+
+    except Exception as e:
+        logging.error(f"Chat route error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.post("/chat-audio")
+async def chat_audio(file: UploadFile = File(...), need_audio: bool = Form(False)):
+    try:
+        # Save uploaded file
+        input_path = os.path.join(STATIC_DIR, "live_input.webm")
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+
+        # Convert to WAV for Whisper
+        wav_path = os.path.join(STATIC_DIR, "live_input.wav")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", input_path,
+            "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav_path
+        ], check=True)
+
+        # Transcribe with Whisper
+        segments, _ = whisper_model.transcribe(wav_path)
+        transcript = " ".join([seg.text for seg in segments]).strip()
+        if not transcript:
+            transcript = "hi"
+
+        q_lower = transcript.lower()
+        image_keywords = ["generate", "create", "draw", "illustrate", "design", "picture", "image", "art"]
+
+        # If audio request is for image
+        if any(k in q_lower for k in image_keywords):
+            image_result = generate_image_hf(transcript)
+            if image_result:
+                return JSONResponse(image_result)
+            else:
+                                return JSONResponse({"reply": "## ❌ Error\n\n⭐ Couldn't generate an image."})
+
+        # Otherwise, Gemini text reply
+        answer = get_ai_response(transcript)
+        structured = format_structured(answer)
+
+        if need_audio:
+            filename = f"answer_{int(time.time())}.mp3"
+            output_mp3 = os.path.join(STATIC_DIR, filename)
+            threading.Thread(
+                target=generate_tts_audio,
+                args=(answer, output_mp3),
+                daemon=True
+            ).start()
+            return JSONResponse({
+                "transcript": transcript,
+                "reply": structured,
+                "audio": f"/static/{filename}"
+            })
+        else:
+            return JSONResponse({
+                "transcript": transcript,
+                "reply": structured
+            })
+
+    except Exception as e:
+        logging.error(f"Chat-audio route error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+
+
+
+
+
+"""import os
+import logging
+import time
+import base64
+import requests
+import subprocess
+from gtts import gTTS
+
+from fastapi import FastAPI, HTTPException, Form, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
+import google.generativeai as genai
+from faster_whisper import WhisperModel
+
+# Allow duplicate OpenMP runtime (workaround for Whisper on Windows)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# --- Configuration ---
+logging.basicConfig(level=logging.INFO)
+load_dotenv()
+
+STATIC_DIR = "static"
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+FRONT_HTML = os.path.join(STATIC_DIR, "new.html")
+
+# Gemini setup
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY not set")
+genai.configure(api_key=GEMINI_API_KEY)
+GEMINI_TEXT_MODEL = "gemini-2.5-flash"
+
+# Whisper setup
+whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+
+# Hugging Face setup
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+HF_MODEL = os.getenv("HF_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
+
+# FastAPI setup
+app = FastAPI(title="Voice + Image Chatbot")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# --- Utility Functions ---
+def get_ai_response(prompt: str) -> str:
+ 
+    try:
+        model = genai.GenerativeModel(GEMINI_TEXT_MODEL)
+        response = model.generate_content(prompt)
+        if hasattr(response, "text") and response.text:
+            return response.text.strip()
+        if hasattr(response, "candidates") and response.candidates:
+            parts = response.candidates[0].content.parts
+            if parts and hasattr(parts[0], "text"):
+                return parts[0].text.strip()
+        return "No response text found."
+    except Exception as e:
+        logging.error(f"Gemini error: {e}")
+        return "Sorry, I couldn't generate a response."
+
+
+def format_structured(text: str) -> str:
+
+    if not text:
+        return "\n\n- No response available."
+
+    bullet_symbol = "⭐"
+    paragraphs = text.split("\n")
+    formatted = []
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        if para.startswith("##"):
+            formatted.append(para)
+            continue
+        if len(para.split()) < 12:
+            formatted.append(para)
+            continue
+        sentences = para.split(". ")
+        for s in sentences:
+            s = s.strip()
+            if s:
+                formatted.append(f"{bullet_symbol} {s}")
+
+    return "\n".join(formatted)
+
+
+def generate_tts_audio(text: str, output_path: str):
+
+    try:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            cleaned = "Sorry, I have no response."
+        tts = gTTS(text=cleaned, lang="en", slow=False)
+        tts.save(output_path)
+    except Exception as e:
+        logging.error(f"TTS error: {e}")
+        raise
+
+
+def generate_image_hf(prompt: str):
+
+    if not HF_API_TOKEN:
+        logging.error("HF_API_TOKEN not set. Cannot generate image.")
+        return None
+    try:
+        url = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL}"
+        headers = {
+            "Authorization": f"Bearer {HF_API_TOKEN}",
+            "Accept": "image/png",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "guidance_scale": 7.5,
+                "num_inference_steps": 50
+            }
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+
+        if response.status_code != 200:
+            logging.error(f"Hugging Face error {response.status_code}: {response.text}")
+            return None
+
+        img_bytes = response.content
+        filename = f"generated_{int(time.time())}.png"
+        img_path = os.path.join(STATIC_DIR, filename)
+        with open(img_path, "wb") as f:
+            f.write(img_bytes)
+
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        return {
+            "reply": f"## 🎨 Generated Image\n\n- Prompt: {prompt}",
+            "image_url": f"/static/{filename}",
+            "image_base64": img_b64
+        }
+
+    except Exception as e:
+        logging.error(f"Hugging Face image error: {e}")
+        return None
+
+
+# --- Routes ---
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return FileResponse(FRONT_HTML)
+
+
+@app.post("/chat-audio")
+async def chat_audio(file: UploadFile = File(...)):
+
+
+    try:
+        # Save uploaded file
+        input_path = os.path.join(STATIC_DIR, "live_input.webm")
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+
+        # Convert to WAV for Whisper
+        wav_path = os.path.join(STATIC_DIR, "live_input.wav")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", input_path,
+            "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav_path
+        ], check=True)
+
+        # Transcribe with Whisper
+        segments, _ = whisper_model.transcribe(wav_path)
+        transcript = " ".join([seg.text for seg in segments]).strip()
+
+        # Get Gemini reply
+        answer = get_ai_response(transcript)
+        structured = format_structured(answer)
+
+        # Generate unique MP3 filename
+        filename = f"answer_{int(time.time())}.mp3"
+        output_mp3 = os.path.join(STATIC_DIR, filename)
+        generate_tts_audio(answer, output_mp3)
+
+        return JSONResponse({
+            "transcript": transcript,
+            "reply": structured,
+            "audio": f"/static/{filename}"
+        })
+
+    except Exception as e:
+        logging.error(f"Chat-audio route error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
 
 @app.get("/favicon.ico")
 def favicon():
@@ -494,6 +488,268 @@ def favicon():
     if os.path.exists(path):
         return FileResponse(path)
     return HTMLResponse(content="", status_code=204)
+""""""
+"""
+"""import os
+import logging
+import time
+import base64
+import requests
+from gtts import gTTS
+
+from fastapi import FastAPI, HTTPException, Form, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
+import google.generativeai as genai
+from faster_whisper import WhisperModel
+
+# Allow duplicate OpenMP runtime (workaround for Whisper on Windows)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# --- Configuration ---
+logging.basicConfig(level=logging.INFO)
+load_dotenv()
+
+STATIC_DIR = "static"
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+OUTPUT_MP3 = os.path.join(STATIC_DIR, "live_answer.mp3")
+FRONT_HTML = os.path.join(STATIC_DIR, "new.html")
+
+# Gemini setup
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY not set")
+genai.configure(api_key=GEMINI_API_KEY)
+GEMINI_TEXT_MODEL = "gemini-2.5-flash"
+
+# Whisper setup
+whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+
+# Hugging Face setup
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+HF_MODEL = os.getenv("HF_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
+
+# FastAPI setup
+app = FastAPI(title="Voice + Image Chatbot")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# --- Utility Functions ---
+def get_ai_response(prompt: str) -> str:
+
+    try:
+        model = genai.GenerativeModel(GEMINI_TEXT_MODEL)
+        response = model.generate_content(prompt)
+        if hasattr(response, "text") and response.text:
+            return response.text.strip()
+        if hasattr(response, "candidates") and response.candidates:
+            parts = response.candidates[0].content.parts
+            if parts and hasattr(parts[0], "text"):
+                return parts[0].text.strip()
+        return "No response text found."
+    except Exception as e:
+        logging.error(f"Gemini error: {e}")
+        return "Sorry, I couldn't generate a response."
+
+def format_structured(text: str) -> str:
+
+    if not text:
+        return "\n\n- No response available."
+
+    # Define custom bullet symbol
+    bullet_symbol = "⭐"   # you can change to "✔️", "•", "→", etc.
+
+    paragraphs = text.split("\n")
+    formatted = []
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        # Preserve Gemini's headings
+        if para.startswith("##"):
+            formatted.append(para)
+            continue
+
+        # Keep short greetings plain
+        if len(para.split()) < 12:
+            formatted.append(para)
+            continue
+
+        # Otherwise bulletize sentences with custom symbol
+        sentences = para.split(". ")
+        for s in sentences:
+            s = s.strip()
+            if s:
+                formatted.append(f"{bullet_symbol} {s}")
+
+    return "\n".join(formatted)
+
+
+
+
+
+def generate_tts_audio(text: str, output_path: str):
+
+    try:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            cleaned = "Sorry, I have no response."
+        tts = gTTS(text=cleaned, lang="en", slow=False)
+        tts.save(output_path)
+    except Exception as e:
+        logging.error(f"TTS error: {e}")
+        raise
+
+
+def generate_image_hf(prompt: str):
+
+    if not HF_API_TOKEN:
+        logging.error("HF_API_TOKEN not set. Cannot generate image.")
+        return None
+    try:
+        url = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL}"
+        headers = {
+            "Authorization": f"Bearer {HF_API_TOKEN}",
+            "Accept": "image/png",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "guidance_scale": 7.5,
+                "num_inference_steps": 50
+            }
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+
+        if response.status_code != 200:
+            logging.error(f"Hugging Face error {response.status_code}: {response.text}")
+            return None
+
+        img_bytes = response.content
+        filename = f"generated_{int(time.time())}.png"
+        img_path = os.path.join(STATIC_DIR, filename)
+        with open(img_path, "wb") as f:
+            f.write(img_bytes)
+
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        return {
+            "reply": f"## 🎨 Generated Image\n\n- Prompt: {prompt}",
+            "image_url": f"/static/{filename}",
+            "image_base64": img_b64
+        }
+
+    except Exception as e:
+        logging.error(f"Hugging Face image error: {e}")
+        return None
+
+
+# --- Routes ---
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return FileResponse(FRONT_HTML)
+import subprocess
+
+@app.post("/chat-audio")
+async def chat_audio(file: UploadFile = File(...)):
+
+    try:
+        # Save uploaded file
+        input_path = os.path.join(STATIC_DIR, "live_input.webm")
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+
+        # Convert to WAV for Whisper
+        wav_path = os.path.join(STATIC_DIR, "live_input.wav")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", input_path,
+            "-ar", "16000", "-ac", "1", "-c:a", "pcm16", wav_path
+        ], check=True)
+
+        # Transcribe with Whisper
+        segments, _ = whisper_model.transcribe(wav_path)
+        transcript = " ".join([seg.text for seg in segments]).strip()
+
+        # Get Gemini reply
+        answer = get_ai_response(transcript)
+        structured = format_structured(answer)
+
+        # Generate unique MP3 filename
+        filename = f"answer_{int(time.time())}.mp3"
+        output_mp3 = os.path.join(STATIC_DIR, filename)
+        generate_tts_audio(answer, output_mp3)
+
+        return JSONResponse({
+            "transcript": transcript,
+            "reply": structured,
+            "audio": f"/static/{filename}"
+        })
+
+    except Exception as e:
+        logging.error(f"Chat-audio route error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.post("/chat")
+async def chat(question: str = Form(...)):
+
+    try:
+        q_lower = question.lower()
+        image_keywords = ["generate", "create", "draw", "illustrate", "design", "picture", "image", "art"]
+
+        if any(k in q_lower for k in image_keywords):
+            image_result = generate_image_hf(question)
+            if image_result:
+                return JSONResponse(image_result)
+            else:
+                return JSONResponse({"reply": "## ❌ Error\n\n- Couldn't generate an image."})
+
+        # Otherwise, use Gemini for text reply
+        start = time.time()
+        answer = get_ai_response(question)
+        structured = format_structured(answer)
+        return JSONResponse({
+            "reply": structured,
+            "llm_time": round(time.time() - start, 2)
+        })
+
+    except Exception as e:
+        logging.error(f"Chat route error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.post("/chat-audio")
+async def chat_audio(file: UploadFile = File(...)):
+
+    try:
+        input_path = os.path.join(STATIC_DIR, "live_input.webm")
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+
+        segments, _ = whisper_model.transcribe(input_path)
+        transcript = " ".join([seg.text for seg in segments]).strip()
+
+        answer = get_ai_response(transcript)
+        structured = format_structured(answer)
+
+        generate_tts_audio(answer, OUTPUT_MP3)
+
+        return JSONResponse({
+            "transcript": transcript,
+            "reply": structured,
+            "audio": "/static/live_answer.mp3"
+        })
+
+    except Exception as e:
+        logging.error(f"Chat-audio route error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
 
 @app.get("/static/live_answer.mp3")
 async def get_audio():
@@ -501,22 +757,11 @@ async def get_audio():
         raise HTTPException(status_code=404, detail="Audio not found.")
     return FileResponse(OUTPUT_MP3, media_type="audio/mpeg")
 
-@app.post("/ask")
-async def ask_question(question: str = Form(...)):
-    try:
-        answer = await asyncio.to_thread(get_ai_response, question)
-        await asyncio.to_thread(generate_tts_audio, answer, OUTPUT_MP3)
-        image_result = await asyncio.to_thread(maybe_generate_image, question)
 
-        return {
-            "question": question,
-            "answer": answer,
-            "audio_url": "/static/live_answer.mp3",
-            "image_base64": image_result.get("image_base64"),
-            "mime_type": image_result.get("mime_type"),
-            "image_url": image_result.get("image_url")
-        }
-    except Exception as e:
-        logging.error(f"Ask route error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+@app.get("/favicon.ico")
+def favicon():
+    path = os.path.join(STATIC_DIR, "favicon.ico")
+    if os.path.exists(path):
+        return FileResponse(path)
+    return HTMLResponse(content="", status_code=204)
 """
