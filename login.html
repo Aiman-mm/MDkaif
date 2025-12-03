@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+  <title>Voice Bot Login</title>
+  <style>
+    .popup i {
+      color: #0078d7;
+      margin-bottom: 15px;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .popup {
+      width: 300px;
+      height: 300px;
+      background: #fff;
+      border-radius: 50%;
+      padding: 20px;
+      text-align: center;
+      box-shadow: 0 0 20px rgba(0,0,0,0.3);
+      animation: fadeIn 1s ease;
+      transition: all 0.5s ease;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      border: 6px solid transparent;
+      background-image: linear-gradient(#fff, #fff),
+        linear-gradient(45deg, red, orange, yellow, green, blue, indigo, violet);
+      background-origin: border-box;
+      background-clip: content-box, border-box;
+      background-size: 400% 400%;
+      animation: rainbow 5s linear infinite;
+    }
+    .popup.square {
+      border-radius: 12px;
+      width: 350px;
+      height: auto;
+      padding: 20px;
+      background: #fff;
+      background-image: none;
+    }
+    h2 {
+      margin: 0;
+      color: #0078d7;
+      font-size: 1.2em;
+      word-wrap: break-word;
+    }
+    .bot-icon {
+      font-size: 60px;
+      margin-top: 15px;
+      cursor: pointer;
+    }
+    input { width: 80%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 4px; }
+    button {
+      width: 85%; padding: 10px; background: #0078d7; color: #fff;
+      border: none; border-radius: 4px; margin-top: 10px; cursor: pointer;
+    }
+    button:hover { background: #005a9e; }
+    .register-link { display: block; margin-top: 15px; font-size: 0.9em; }
+    .register-link a { color: #0078d7; text-decoration: none; }
+    .register-link a:hover { text-decoration: underline; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.8); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    @keyframes rainbow {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    #nextBtn {
+  background: none;       /* remove background color */
+  border: none;           /* remove border */
+  color: #262728;         /* icon color */
+  font-size: 40px;        /* make icon bigger */
+  cursor: pointer;        /* pointer on hover */
+  padding: 10px;          /* spacing around icon */
+}
+
+#nextBtn:hover {
+  color: #1b1c1c;         /* darker blue on hover */
+}
+
+  </style>
+</head>
+<body>
+<div class="popup" id="popup">
+  
+  <h2>Welcome to Voice Bot</h2>
+  <button id="nextBtn"><i class="fas fa-robot fa-3x"></i></button>
+</div>
+<script>
+    const popup = document.getElementById("popup");
+
+  // Show login form
+  function showLogin() {
+    popup.className = "popup square"; // square box
+    popup.innerHTML = `
+      <h2>Login</h2>
+      <form id="loginForm" method="post" action="/login">
+        <input type="text" name="username" placeholder="Username" required />
+        <input type="password" name="password" placeholder="Password" required />
+        <button type="submit">Login</button>
+      </form>
+      <div id="loginMessage"></div>
+      <div class="register-link">
+        Not registered? <a href="#" id="registerLink">Click here to register</a>
+      </div>
+    `;
+
+    // Handle login
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const response = await fetch("/login", { method: "POST", body: formData });
+      if (response.redirected) {
+        window.location.href = response.url;
+      } else {
+        const data = await response.json();
+        const msgEl = document.getElementById("loginMessage");
+        msgEl.textContent = data.message;
+        msgEl.style.color = data.success ? "green" : "red";
+      }
+    });
+
+    // Register link
+    document.getElementById("registerLink").addEventListener("click", (e) => {
+      e.preventDefault();
+      showRegister();
+    });
+  }
+
+  // Attach click handler to robot button
+  document.getElementById("nextBtn").addEventListener("click", () => {
+    showLogin();
+  });
+
+
+
+  // Show register form
+function showRegister() {
+  popup.className = "popup square";
+  popup.innerHTML = `
+    <h2>Register for Voice Bot</h2>
+    <form id="registerForm">
+      <input type="text" name="username" placeholder="Choose a username" required />
+      <input type="password" name="password" placeholder="Choose a password" required />
+      <button type="submit">Register</button>
+    </form>
+    <div id="registerMessage"></div>
+    <div class="register-link">
+      Already registered? <a href="#" id="backToLogin">Back to Login</a>
+    </div>
+  `;
+
+  // Handle registration
+  document.getElementById("registerForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const formData = new FormData(ev.target);
+    const response = await fetch("/register", { method: "POST", body: formData });
+    const data = await response.json();
+    const msgEl = document.getElementById("registerMessage");
+    msgEl.textContent = data.message;
+    msgEl.style.color = data.success ? "green" : "red";
+
+    // ✅ If registration succeeded, wait 2 seconds then go back to login
+    if (data.success) {
+      setTimeout(() => {
+        showLogin();
+        // Show a success message on login screen
+        const loginMsg = document.getElementById("loginMessage");
+        loginMsg.textContent = "Registration successful! Please log in.";
+        loginMsg.style.color = "green";
+      }, 2000);
+    }
+  });
+
+  // Back to login (square login, not welcome)
+  document.getElementById("backToLogin").addEventListener("click", (e) => {
+    e.preventDefault();
+    showLogin();
+  });
+}
+
+</script>
+
+
+
+</body>
+</html>
+
+
+<!--<script>
+  const popup = document.getElementById("popup");
+
+  // Show welcome popup (initial state)
+  function showWelcome() {
+    popup.className = "popup"; // circle
+    popup.innerHTML = `
+      <h2>Welcome to Voice Bot</h2>
+      <button id="nextBtn"><i class="fas fa-robot fa-3x"></i></button>
+    `;
+    document.getElementById("nextBtn").addEventListener("click", showLogin);
+  }
+
+  // Show login form
+  function showLogin() {
+    popup.className = "popup square"; // square box
+    popup.innerHTML = `
+      <h2>Login</h2>
+      <form id="loginForm" method="post" action="/login">
+        <input type="text" name="username" placeholder="Username" required />
+        <input type="password" name="password" placeholder="Password" required />
+        <button type="submit">Login</button>
+      </form>
+      <div id="loginMessage"></div>
+      <div class="register-link">
+        Not registered? <a href="#" id="registerLink">Click here to register</a>
+      </div>
+    `;
+
+    // Handle login
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      try {
+        const response = await fetch("/login", { method: "POST", body: formData });
+        if (response.redirected) {
+          window.location.href = response.url;
+        } else {
+          const data = await response.json();
+          showMessage(data.message, data.success);
+        }
+      } catch {
+        showMessage("Something went wrong. Please try again.", false);
+      }
+    });
+
+    // Handle register link
+    document.getElementById("registerLink").addEventListener("click", (e) => {
+      e.preventDefault();
+      showRegister();
+    });
+  }
+
+  // Show register form
+  function showRegister() {
+    popup.className = "popup square";
+    popup.innerHTML = `
+      <h2>Register for Voice Bot</h2>
+      <form id="registerForm">
+        <input type="text" name="username" placeholder="Choose a username" required />
+        <input type="password" name="password" placeholder="Choose a password" required />
+        <button type="submit">Register</button>
+      </form>
+      <div id="registerMessage"></div>
+      <div class="register-link">
+        Already registered? <a href="#" id="backToLogin">Back to Login</a>
+      </div>
+    `;
+
+    // Handle registration
+    document.getElementById("registerForm").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const formData = new FormData(ev.target);
+      const response = await fetch("/register", { method: "POST", body: formData });
+      const data = await response.json();
+      const msgEl = document.getElementById("registerMessage");
+      msgEl.textContent = data.message;
+      msgEl.style.color = data.success ? "green" : "red";
+    });
+
+    // Back to login (square login, not welcome)
+    document.getElementById("backToLogin").addEventListener("click", (e) => {
+      e.preventDefault();
+      showLogin();
+    });
+  }
+
+  // Utility for messages
+  function showMessage(msg, success) {
+    const msgEl = document.getElementById("loginMessage");
+    msgEl.textContent = msg;
+    msgEl.style.color = success ? "green" : "red";
+  }
+
+  // Initialize with welcome popup
+  showWelcome();
+</script>-->

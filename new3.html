@@ -5,6 +5,246 @@
   <title>Chatbot</title>
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="/static/chat.css"> 
+   
+</head>
+<body>
+  <div class="chat-container">
+    <div class="chat-header">
+      Voice + Image Chatbot
+      <div class="header-actions">
+        <button id="logoutBtn" class="logout-btn">
+          <i class="fa-solid fa-right-from-bracket"></i> Logout
+        </button>
+        <button id="speakerBtn" class="speaker-toggle" aria-label="Toggle speaker">
+          <i class="fa-solid fa-volume-up"></i>
+        </button>
+      </div>
+    </div>
+
+    <div id="chatMessages" class="chat-messages"></div>
+
+    <div class="chat-input">
+      <input id="textInput" type="text" placeholder="Type your question..." aria-label="Chat input">
+      <button id="sendBtn" class="send-btn" aria-label="Send message"><i class="fa-solid fa-paper-plane"></i></button>
+      <button id="micBtn" class="mic-btn" aria-label="Record voice"><i class="fa-solid fa-microphone"></i></button>
+    </div>
+
+    <!-- Audio playback element -->
+    <audio id="replyAudio" controls style="display:none"></audio>
+  </div>
+
+  <!-- External JS -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+  <script src="/static/chat.js"></script>
+</body>
+</html>
+
+<!--
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Playground Popup</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #f9fafb;
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+    }
+    .header {
+      width: 100%;
+      display: flex;
+      justify-content: flex-end;
+      padding: 10px 20px;
+      box-sizing: border-box;
+    }
+    .logout-btn {
+  position: fixed;   /* stays fixed on screen */
+  top: 10px;         /* distance from top */
+  right: 10px;       /* distance from right */
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  z-index: 1000;     /* ensures it stays above popups */
+}
+.logout-btn:hover {
+  background: #b91c1c;
+}
+
+    .mode-icons {
+      display: flex;
+      gap: 40px;
+      margin-top: 40px;
+    }
+    .mode-icons i {
+      font-size: 50px;
+      cursor: pointer;
+      color: #2563eb;
+      transition: transform 0.2s;
+    }
+    .mode-icons i:hover {
+      transform: scale(1.2);
+      color: #1e40af;
+    }
+    .popup {
+      display: none;
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.5);
+      justify-content: center;
+      align-items: center;
+    }
+    .popup-content {
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      width: 90%;
+      max-width: 500px;
+      text-align: center;
+      position: relative;
+    }
+    .popup-content h2 {
+      margin-top: 0;
+      color: #2563eb;
+    }
+    .back-btn {
+      position: absolute;
+      top: 10px; left: 10px;
+      background: none;
+      border: none;
+      font-size: 20px;
+      cursor: pointer;
+      color: #2563eb;
+    }
+    .popup-content input {
+      width: 80%;
+      padding: 10px;
+      margin: 10px 0;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    .popup-content button {
+      padding: 10px 16px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .popup-content button:hover {
+      background: #1e40af;
+    }
+  </style>
+</head>
+<body>
+
+  # Header with Logout 
+  <div class="header">
+    <button id="logoutBtn" class="logout-btn">
+      <i class="fa-solid fa-right-from-bracket"></i> Logout
+    </button>
+  </div>
+
+  # Main menu 
+  <div class="mode-icons" id="menu">
+    <i id="chatIcon" class="fa-solid fa-comment" title="Chat Bot"></i>
+    <i id="voiceIcon" class="fa-solid fa-microphone" title="Voice Bot"></i>
+    <i id="imageIcon" class="fa-solid fa-image" title="Image Generator"></i>
+  </div>
+
+  # Chat popup 
+  <div class="popup" id="chatPopup">
+    <div class="popup-content">
+      <button class="back-btn" onclick="closePopup('chatPopup')"><i class="fa-solid fa-arrow-left"></i></button>
+      <h2>💬 Chat Bot</h2>
+      <input id="chatInput" type="text" placeholder="Type your question...">
+      <button id="chatSend">Send</button>
+      <div id="chatOutput"></div>
+    </div>
+  </div>
+
+  # Voice popup 
+  <div class="popup" id="voicePopup">
+    <div class="popup-content">
+      <button class="back-btn" onclick="closePopup('voicePopup')"><i class="fa-solid fa-arrow-left"></i></button>
+      <h2>🎤 Voice Bot</h2>
+      <button id="micBtn"><i class="fa-solid fa-microphone"></i></button>
+      <p>Ask anything, I’ll help you!</p>
+      <div id="voiceOutput"></div>
+      <audio id="replyAudio" controls style="display:none"></audio>
+    </div>
+  </div>
+
+  # Image popup 
+  <div class="popup" id="imagePopup">
+    <div class="popup-content">
+      <button class="back-btn" onclick="closePopup('imagePopup')"><i class="fa-solid fa-arrow-left"></i></button>
+      <h2>🎨 Image Generator</h2>
+      <input id="imagePrompt" type="text" placeholder="Enter image prompt...">
+      <button id="generateImageBtn">Generate</button>
+      <div id="imageOutput"></div>
+    </div>
+  </div>
+
+<script>
+  // Open popups
+  document.getElementById("chatIcon").addEventListener("click", () => openPopup("chatPopup"));
+  document.getElementById("voiceIcon").addEventListener("click", () => openPopup("voicePopup"));
+  document.getElementById("imageIcon").addEventListener("click", () => openPopup("imagePopup"));
+
+  function openPopup(id) {
+    document.getElementById("menu").style.display = "none";
+    document.getElementById(id).style.display = "flex";
+  }
+  function closePopup(id) {
+    document.getElementById(id).style.display = "none";
+    document.getElementById("menu").style.display = "flex";
+  }
+
+  // Logout button
+  document.getElementById("logoutBtn").addEventListener("click", () => {
+    window.location.href = "/login";
+  });
+
+  // Example handlers
+  document.getElementById("chatSend").addEventListener("click", () => {
+    const q = document.getElementById("chatInput").value;
+    document.getElementById("chatOutput").innerHTML += `<p><b>You:</b> ${q}</p><p><b>Bot:</b> (text reply)</p>`;
+  });
+
+  document.getElementById("generateImageBtn").addEventListener("click", () => {
+    const q = document.getElementById("imagePrompt").value;
+    document.getElementById("imageOutput").innerHTML += `<p><b>You:</b> ${q}</p><p><b>Bot:</b> (image generated)</p>`;
+  });
+
+  document.getElementById("micBtn").addEventListener("click", () => {
+    document.getElementById("voiceOutput").innerHTML += `<p>🎤 Recording... Bot will reply with voice + text + image.</p>`;
+  });
+</script>
+
+</body>
+</html>
+-->
+
+<!--<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Chatbot</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
     body {
       font-family: "Segoe UI", sans-serif;
@@ -63,6 +303,12 @@
     }
     .user { background: #2563eb; color: #fff; align-self: flex-end; text-align: right; }
     .bot { background: #f3f4f6; color: #111; align-self: flex-start; text-align: left; }
+    .message img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+      margin-top: 10px;
+    }
     .listening { font-size: 14px; font-style: italic; color: #666; align-self: flex-end; }
     .chat-input {
       display: flex;
@@ -104,7 +350,7 @@
   <div class="chat-container">
     <div class="chat-header">
       Voice + Image Chatbot
-      <button id="speakerBtn" class="speaker-toggle">
+      <button id="speakerBtn" class="speaker-toggle" aria-label="Toggle speaker">
         <i class="fa-solid fa-volume-up"></i>
       </button>
     </div>
@@ -112,12 +358,12 @@
     <div id="chatMessages" class="chat-messages"></div>
 
     <div class="chat-input">
-      <input id="textInput" type="text" placeholder="Type your question...">
-      <button id="sendBtn" class="send-btn"><i class="fa-solid fa-paper-plane"></i></button>
-      <button id="micBtn" class="mic-btn"><i class="fa-solid fa-microphone"></i></button>
+      <input id="textInput" type="text" placeholder="Type your question..." aria-label="Chat input">
+      <button id="sendBtn" class="send-btn" aria-label="Send message"><i class="fa-solid fa-paper-plane"></i></button>
+      <button id="micBtn" class="mic-btn" aria-label="Record voice"><i class="fa-solid fa-microphone"></i></button>
     </div>
 
-    <!-- Audio playback element -->
+    //-- Audio playback element --
     <audio id="replyAudio" controls style="display:none"></audio>
   </div>
   
@@ -143,6 +389,27 @@ speakerBtn.addEventListener("click", () => {
   icon.className = audioEnabled ? "fa-solid fa-volume-up" : "fa-solid fa-volume-xmark";
 });
 
+// --- Utility ---
+function setInputState(disabled) {
+  chatInputElements.forEach(el => el.disabled = disabled);
+}
+
+// --- Add Message ---
+function addMessage(text, sender, imageUrl = null) {
+  if (!text && !imageUrl) return;
+  const div = document.createElement("div");
+  div.className = `message ${sender}`;
+  if (text) div.innerHTML = DOMPurify.sanitize(marked.parse(text));
+  if (imageUrl) {
+    const img = document.createElement("img");
+    img.src = imageUrl;
+    div.appendChild(img);
+  }
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// --- Indicators ---
 // --- Utility ---
 function setInputState(disabled) {
   chatInputElements.forEach(el => el.disabled = disabled);
@@ -251,6 +518,45 @@ function addBotReply(data) {
   }
 }
 
+// --- Bot Reply ---
+function addBotReply(data) {
+  hideTyping();
+  hideImageLoader();
+  setInputState(false);
+
+  if (data.reply || data.image_url) {
+    addMessage(data.reply, "bot", data.image_url);
+  }
+
+  if (data.audio && audioEnabled) {
+    const filenameWithQuery = data.audio.split("/").pop();
+    const filename = filenameWithQuery.split("?")[0];
+
+    let attempts = 0;
+    const checkAudio = async () => {
+      if (attempts++ > 30) return; // stop after ~30s
+      try {
+        const res = await fetch(`/audio-status/${filename}`);
+        const status = await res.json();
+        if (status.ready) {
+          replyAudio.src = data.audio;
+          replyAudio.style.display = "none"; // keep hidden
+          replyAudio.play().catch(err => {
+            console.warn("Autoplay blocked:", err);
+            replyAudio.controls = true;
+            replyAudio.style.display = "block"; // show only if autoplay fails
+          });
+        } else {
+          setTimeout(checkAudio, 1000);
+        }
+      } catch {
+        setTimeout(checkAudio, 1000);
+      }
+    };
+    checkAudio();
+  }
+}
+
 // --- Text Chat ---
 async function sendMessage(question) {
   if (!question.trim()) return;
@@ -289,6 +595,7 @@ async function sendMessage(question) {
     addMessage(`❌ Error: ${err.message}`, "bot");
   }
 }
+
 
 sendBtn.addEventListener("click", () => sendMessage(textInput.value));
 textInput.addEventListener("keypress", (e) => {
@@ -350,11 +657,17 @@ micBtn.addEventListener("click", async () => {
     recorder.stop();
   }
 });
-
-
-
 </script>
-<!--<script>
+</body>
+</html>-->
+
+
+
+
+
+<!--<html>
+<body>
+<script>
     const chatMessages = document.getElementById("chatMessages");
     const textInput = document.getElementById("textInput");
     const sendBtn = document.getElementById("sendBtn");
@@ -623,9 +936,9 @@ micBtn.addEventListener("click", async () => {
             // The input remains disabled until the response comes back via addBotReply
         }
     });
-</script>-->
+</script>
 
-<!--
+
  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
 <script>
@@ -892,7 +1205,7 @@ micBtn.addEventListener("click", async () => {
             // Keep input disabled until the transcription/chat is complete
         }
     });
-</script>-->
+</script>
 
 </body>
-</html>
+</html>-->
