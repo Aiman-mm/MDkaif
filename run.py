@@ -155,7 +155,7 @@ def load_pipeline_turbo():
         torch_dtype=dtype,
         low_cpu_mem_usage=True
     ).to(device)
-    pipe.safety_checker = None
+    #pipe.safety_checker = None
     pipe.enable_attention_slicing()
     return pipe
 
@@ -245,8 +245,6 @@ app.add_middleware(
     allow_headers=["*"]
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-
 
 # --- Routes ---
 
@@ -369,6 +367,17 @@ async def chat(question: str = Form(...)):
     except Exception as e:
         logging.error(f"Chat route error: {e}", exc_info=True)
         return JSONResponse({"reply": "Critical error occurred.", "audio": None}, status_code=500)
+    
+@app.get("/logout")
+def logout():
+    return RedirectResponse(url="/login", status_code=303)
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    path = os.path.join(STATIC_DIR, "login.html")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Login page not found.")
+    return FileResponse(path)
 
 
 @app.post("/chat-audio")
