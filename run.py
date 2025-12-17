@@ -147,6 +147,23 @@ whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
 # --- Stable Diffusion setup ---
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+def load_pipeline_base():
+    logging.info("Loading diffusion pipeline: stabilityai/stable-diffusion-1.5")
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    pipe = StableDiffusionPipeline.from_pretrained(
+        "runwayml/stable-diffusion-v1-5",   # ✅ switched from sd-turbo to sd-base (1.5)
+        torch_dtype=dtype,
+        low_cpu_mem_usage=True
+    ).to(device)
+    pipe.safety_checker = None 
+    pipe.enable_attention_slicing()
+    return pipe
+
+pipe = load_pipeline_base()
+
+"""# --- Stable Diffusion setup ---
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 def load_pipeline_turbo():
     logging.info("Loading diffusion pipeline: stabilityai/sd-turbo")
     dtype = torch.float16 if device == "cuda" else torch.float32
@@ -160,7 +177,7 @@ def load_pipeline_turbo():
     return pipe
 
 pipe = load_pipeline_turbo()
-
+"""
 # --- Intent detection ---
 TEXT_INTENT = {"explain", "describe", "illusion", "clarify", "meaning", "definition"}
 IMAGE_INTENT = {"create", "generate", "draw", "illustrate", "design", "render", "sketch",
@@ -246,50 +263,37 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# --- Routes ---
+# --- Configuration ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")   # ✅ permanent template folder
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
+os.makedirs(TEMPLATE_DIR, exist_ok=True)
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+# Paths to frontend files
+LOGIN_HTML = os.path.join(TEMPLATE_DIR, "login.html")
+FRONT_HTML = os.path.join(TEMPLATE_DIR, "new3.html")
 
 @app.get("/", response_class=HTMLResponse)
 def root():
-    # Show login page first
-    path = os.path.join(STATIC_DIR, "login.html")
-    if not os.path.exists(path):
+    if not os.path.exists(LOGIN_HTML):
         raise HTTPException(status_code=404, detail="Login page not found.")
-    return FileResponse(path)
+    return FileResponse(LOGIN_HTML)
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page():
-    # Serve the same login.html
-    path = os.path.join(STATIC_DIR, "login.html")
-    if not os.path.exists(path):
+    if not os.path.exists(LOGIN_HTML):
         raise HTTPException(status_code=404, detail="Login page not found.")
-    return FileResponse(path)
-
-
-@app.post("/register")
-async def register(username: str = Form(...), password: str = Form(...)):
-    if register_user(username, password):
-        return JSONResponse({"success": True, "message": "User registered successfully!"})
-    else:
-        return JSONResponse({"success": False, "message": "Username already exists."})
-
-
-@app.post("/login")
-async def login(username: str = Form(...), password: str = Form(...)):
-    # ✅ Check credentials against database
-    if verify_user(username, password):
-        # Redirect to chatbot page if valid
-        return RedirectResponse(url="/chatbot", status_code=303)
-    else:
-        # Invalid credentials
-        return JSONResponse({"success": False, "message": "Invalid credentials."})
-
+    return FileResponse(LOGIN_HTML)
 
 @app.get("/chatbot", response_class=HTMLResponse)
 def chatbot_page():
     if not os.path.exists(FRONT_HTML):
-        #raise HTTPException(status_code=404, detail="Frontend file 'new.html' not found.")
         raise HTTPException(status_code=404, detail="Frontend file 'new3.html' not found.")
     return FileResponse(FRONT_HTML)
+
+
 
 
 @app.get("/favicon.ico")
@@ -374,10 +378,10 @@ def logout():
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page():
-    path = os.path.join(STATIC_DIR, "login.html")
-    if not os.path.exists(path):
+    if not os.path.exists(LOGIN_HTML):
         raise HTTPException(status_code=404, detail="Login page not found.")
-    return FileResponse(path)
+    return FileResponse(LOGIN_HTML)
+
 
 
 @app.post("/chat-audio")
